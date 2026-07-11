@@ -177,9 +177,11 @@ V_MIN, V_MAX = 100, 255
 RED_H_MIN_2, RED_H_MAX_2 = 170, 179
 
 TRACE_SPEED = 40
-STRAIGHT_DISTANCE_SEQUENCE_CM = [370, 350, 330, 330]
+STRAIGHT_DISTANCE_SEQUENCE_CM = [350, 340, 330, 330]
 MIN_STRAIGHT_DISTANCE_CM = STRAIGHT_DISTANCE_SEQUENCE_CM[0]
 TURN_UNLOCK_MARGIN_CM = 100
+EARLY_TURN_DX_THRESHOLD = 60
+EARLY_TURN_WIDTH_THRESHOLD = 300
 TURN_SPEED = 15
 FORCE_TURN_FORWARD_SPEED = 0
 CORNER_FORCE_TURN_SECONDS = 2.0
@@ -191,6 +193,7 @@ LOST_SEARCH_SPEED = 10
 LOST_SEARCH_YAW = 70
 MAX_LOST_FRAMES = 45
 TRACE_LOG_INTERVAL = 1.0
+NEAR_TURN_TRACE_LOG_INTERVAL = 0.25
 LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), "drone_linetrace_trace.log")
 DEADBAND = 25
 YAW_GAIN = 1.2
@@ -350,7 +353,46 @@ try:
                     s >= CORNER_AREA_THRESHOLD
                     or w >= CORNER_WIDTH_THRESHOLD
                 )
-                if estimated_distance < next_turn_allowed_distance:
+                near_turn_distance = (
+                    estimated_distance >= next_turn_allowed_distance - TURN_UNLOCK_MARGIN_CM
+                )
+                early_turn_candidate = (
+                    not in_corner
+                    and corner_count < TOTAL_CORNERS
+                    and near_turn_distance
+                    and (abs(dx) >= EARLY_TURN_DX_THRESHOLD or w >= EARLY_TURN_WIDTH_THRESHOLD)
+                )
+
+                if in_corner:
+                    force_turn_elapsed = time.time() - corner_turn_started_at
+                    if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                        b = FORCE_TURN_FORWARD_SPEED
+                        d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
+                    else:
+                        in_corner = False
+                        straight_frame_count = 0
+                        next_distance = straight_distance_for_corner(corner_count)
+                        next_turn_allowed_distance = estimated_distance + next_distance
+                        turn_unlocked = False
+                        lost_frame_count = 0
+                        stop_logged = False
+                        after_turn_until = time.time() + AFTER_TURN_SECONDS
+                        b = AFTER_TURN_SPEED
+                        d = 0
+                        log_event(
+                            "TURN END",
+                            corner=f"{corner_count}/{TOTAL_CORNERS}",
+                            elapsed=f"{elapsed:.1f}s",
+                            mx=mx,
+                            my=my,
+                            area=s,
+                            width=w,
+                            speed=int(b),
+                            yaw=int(d),
+                            next_distance_cm=next_distance,
+                            next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
+                        )
+                elif estimated_distance < next_turn_allowed_distance and not early_turn_candidate:
                     b = AFTER_TURN_SPEED if time.time() < after_turn_until else TRACE_SPEED
                     d = 0
                 else:
@@ -358,18 +400,30 @@ try:
                         turn_unlocked = True
                         log_event(
                             "TURN UNLOCK",
+                            reason="early-corner" if early_turn_candidate else "distance",
                             elapsed=f"{elapsed:.1f}s",
                             distance_cm=f"{estimated_distance:.0f}",
                             corner=f"{corner_count + 1}/{TOTAL_CORNERS}",
                             required_cm=f"{next_turn_allowed_distance:.0f}",
                         )
-                    if not in_corner and corner_candidate:
+                    if early_turn_candidate:
+                        log_event(
+                            "EARLY TURN",
+                            dx=f"{dx:+.1f}",
+                            width=w,
+                            area=s,
+                            distance_cm=f"{estimated_distance:.0f}",
+                            required_cm=f"{next_turn_allowed_distance:.0f}",
+                        )
+                    if not in_corner and (corner_candidate or early_turn_candidate):
                         in_corner = True
                         straight_frame_count = 0
                         corner_turn_started_at = time.time()
                         corner_count += 1
+                        turn_reason = "early-corner" if early_turn_candidate and not corner_candidate else "visual"
                         log_event(
                             "TURN START",
+                            reason=turn_reason,
                             corner=f"{corner_count}/{TOTAL_CORNERS}",
                             elapsed=f"{elapsed:.1f}s",
                             mx=mx,
@@ -379,37 +433,10 @@ try:
                             speed=FORCE_TURN_FORWARD_SPEED,
                             yaw=YAW_LIMIT,
                         )
+                        b = FORCE_TURN_FORWARD_SPEED
+                        d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
 
-                    if in_corner:
-                        force_turn_elapsed = time.time() - corner_turn_started_at
-                        if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
-                            b = FORCE_TURN_FORWARD_SPEED
-                            d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
-                        else:
-                            in_corner = False
-                            straight_frame_count = 0
-                            next_distance = straight_distance_for_corner(corner_count)
-                            next_turn_allowed_distance = estimated_distance + next_distance
-                            turn_unlocked = False
-                            lost_frame_count = 0
-                            stop_logged = False
-                            after_turn_until = time.time() + AFTER_TURN_SECONDS
-                            b = AFTER_TURN_SPEED
-                            d = 0
-                            log_event(
-                                "TURN END",
-                                corner=f"{corner_count}/{TOTAL_CORNERS}",
-                                elapsed=f"{elapsed:.1f}s",
-                                mx=mx,
-                                my=my,
-                                area=s,
-                                width=w,
-                                speed=int(b),
-                                yaw=int(d),
-                                next_distance_cm=next_distance,
-                                next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
-                            )
-                    else:
+                    if not in_corner:
                         normal_speed = AFTER_TURN_SPEED if time.time() < after_turn_until else TRACE_SPEED
                         b = TURN_SPEED if abs(d) >= CORNER_YAW_THRESHOLD else normal_speed
 
@@ -418,10 +445,18 @@ try:
                     estimated_distance += max(0, b) * (now - last_trace_time)
                 last_trace_time = now
 
-                if time.time() - last_trace_log_at >= TRACE_LOG_INTERVAL:
-                    write_log('[TRACE] dx=%+.1f b=%d d=%d dist=%d/%d area=%d w=%d mx=%d my=%d corner=%d/%d lost=%d'%(
+                trace_log_interval = (
+                    NEAR_TURN_TRACE_LOG_INTERVAL
+                    if near_turn_distance or in_corner
+                    else TRACE_LOG_INTERVAL
+                )
+                if time.time() - last_trace_log_at >= trace_log_interval:
+                    write_log('[TRACE] dx=%+.1f b=%d d=%d dist=%d/%d area=%d w=%d mx=%d my=%d corner=%d/%d lost=%d near=%d early=%d in_turn=%d'%(
                         dx, b, d, estimated_distance, next_turn_allowed_distance,
-                        s, w, mx, my, corner_count, TOTAL_CORNERS, lost_frame_count
+                        s, w, mx, my, corner_count, TOTAL_CORNERS, lost_frame_count,
+                        1 if near_turn_distance else 0,
+                        1 if early_turn_candidate else 0,
+                        1 if in_corner else 0,
                     ))
                     last_trace_log_at = time.time()
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS )
