@@ -176,17 +176,21 @@ S_MIN, S_MAX = 100, 255
 V_MIN, V_MAX = 100, 255
 RED_H_MIN_2, RED_H_MAX_2 = 170, 179
 
-TRACE_SPEED = 25
-STRAIGHT_DISTANCE_SEQUENCE_CM = [320, 310, 300, 300]
+TRACE_SPEED = 30
+STRAIGHT_DISTANCE_SEQUENCE_CM = [340, 230, 230, 230]
 MIN_STRAIGHT_DISTANCE_CM = STRAIGHT_DISTANCE_SEQUENCE_CM[0]
-TURN_UNLOCK_MARGIN_CM = 100
+TURN_UNLOCK_MARGIN_CM = 110
 EARLY_TURN_DX_THRESHOLD = 60
 EARLY_TURN_WIDTH_THRESHOLD = 300
 TURN_SPEED = 10
 FORCE_TURN_FORWARD_SPEED = 0
+PRE_TURN_STOP_SECONDS = 0.5
 CORNER_FORCE_TURN_SECONDS = 2.5
-AFTER_TURN_SPEED = 10
-AFTER_TURN_SECONDS = 2.0
+TURN_END_MIN_SECONDS = 1.0
+TURN_END_CENTER_DX = 45
+TURN_END_MIN_AREA = 900
+AFTER_TURN_SPEED = 12
+AFTER_TURN_SECONDS = 1.5
 CORNER_AREA_THRESHOLD = 15000
 CORNER_WIDTH_THRESHOLD = 300
 LOST_SEARCH_SPEED = 5
@@ -251,6 +255,13 @@ def log_event(name, **fields):
 def straight_distance_for_corner(corner_index):
     index = min(corner_index, len(STRAIGHT_DISTANCE_SEQUENCE_CM) - 1)
     return STRAIGHT_DISTANCE_SEQUENCE_CM[index]
+
+def should_finish_turn(force_turn_elapsed, dx=None, area=0):
+    if force_turn_elapsed < PRE_TURN_STOP_SECONDS + TURN_END_MIN_SECONDS:
+        return False
+    if dx is not None and abs(dx) <= TURN_END_CENTER_DX and area >= TURN_END_MIN_AREA:
+        return True
+    return force_turn_elapsed >= PRE_TURN_STOP_SECONDS + CORNER_FORCE_TURN_SECONDS
 
 # 繰り返し実行
 try:
@@ -365,7 +376,11 @@ try:
 
                 if in_corner:
                     force_turn_elapsed = time.time() - corner_turn_started_at
-                    if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                    turn_finished = should_finish_turn(force_turn_elapsed, dx=dx, area=s)
+                    if force_turn_elapsed < PRE_TURN_STOP_SECONDS:
+                        b = 0
+                        d = 0
+                    elif not turn_finished:
                         b = FORCE_TURN_FORWARD_SPEED
                         d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
                     else:
@@ -389,6 +404,8 @@ try:
                             width=w,
                             speed=int(b),
                             yaw=int(d),
+                            reason="centered" if abs(dx) <= TURN_END_CENTER_DX and s >= TURN_END_MIN_AREA else "timeout",
+                            turn_elapsed=f"{force_turn_elapsed:.1f}s",
                             next_distance_cm=next_distance,
                             next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                         )
@@ -431,10 +448,11 @@ try:
                             area=s,
                             width=w,
                             speed=FORCE_TURN_FORWARD_SPEED,
-                            yaw=YAW_LIMIT,
+                            brake_s=PRE_TURN_STOP_SECONDS,
+                            yaw_after_brake=YAW_LIMIT,
                         )
                         b = FORCE_TURN_FORWARD_SPEED
-                        d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
+                        d = 0
 
                     if not in_corner:
                         normal_speed = AFTER_TURN_SPEED if time.time() < after_turn_until else TRACE_SPEED
@@ -487,13 +505,18 @@ try:
                         reason="red-lost",
                         corner=f"{corner_count}/{TOTAL_CORNERS}",
                         speed=FORCE_TURN_FORWARD_SPEED,
-                        yaw=YAW_LIMIT,
+                        brake_s=PRE_TURN_STOP_SECONDS,
+                        yaw_after_brake=YAW_LIMIT,
                         dist=f"{estimated_distance:.0f}",
                     )
 
                 if in_corner:
                     force_turn_elapsed = time.time() - corner_turn_started_at
-                    if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                    turn_finished = should_finish_turn(force_turn_elapsed)
+                    if force_turn_elapsed < PRE_TURN_STOP_SECONDS:
+                        b = 0
+                        d = 0
+                    elif not turn_finished:
                         b = FORCE_TURN_FORWARD_SPEED
                         d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
                     else:
@@ -513,6 +536,7 @@ try:
                             corner=f"{corner_count}/{TOTAL_CORNERS}",
                             speed=int(b),
                             yaw=int(d),
+                            turn_elapsed=f"{force_turn_elapsed:.1f}s",
                             next_distance_cm=next_distance,
                             next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                         )
@@ -544,13 +568,18 @@ try:
                     reason="red-lost",
                     corner=f"{corner_count}/{TOTAL_CORNERS}",
                     speed=FORCE_TURN_FORWARD_SPEED,
-                    yaw=YAW_LIMIT,
+                    brake_s=PRE_TURN_STOP_SECONDS,
+                    yaw_after_brake=YAW_LIMIT,
                     dist=f"{estimated_distance:.0f}",
                 )
 
             if in_corner:
                 force_turn_elapsed = time.time() - corner_turn_started_at
-                if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                turn_finished = should_finish_turn(force_turn_elapsed)
+                if force_turn_elapsed < PRE_TURN_STOP_SECONDS:
+                    b = 0
+                    d = 0
+                elif not turn_finished:
                     b = FORCE_TURN_FORWARD_SPEED
                     d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
                 else:
@@ -570,6 +599,7 @@ try:
                         corner=f"{corner_count}/{TOTAL_CORNERS}",
                         speed=int(b),
                         yaw=int(d),
+                        turn_elapsed=f"{force_turn_elapsed:.1f}s",
                         next_distance_cm=next_distance,
                         next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                     )
