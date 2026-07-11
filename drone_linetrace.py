@@ -177,7 +177,8 @@ V_MIN, V_MAX = 100, 255
 RED_H_MIN_2, RED_H_MAX_2 = 170, 179
 
 TRACE_SPEED = 40
-MIN_STRAIGHT_DISTANCE_CM = 370
+STRAIGHT_DISTANCE_SEQUENCE_CM = [370, 350, 330, 330]
+MIN_STRAIGHT_DISTANCE_CM = STRAIGHT_DISTANCE_SEQUENCE_CM[0]
 TURN_UNLOCK_MARGIN_CM = 100
 TURN_SPEED = 15
 FORCE_TURN_FORWARD_SPEED = 0
@@ -188,7 +189,7 @@ CORNER_AREA_THRESHOLD = 15000
 CORNER_WIDTH_THRESHOLD = 300
 LOST_SEARCH_SPEED = 10
 LOST_SEARCH_YAW = 70
-MAX_LOST_FRAMES = 20
+MAX_LOST_FRAMES = 45
 TRACE_LOG_INTERVAL = 1.0
 LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), "drone_linetrace_trace.log")
 DEADBAND = 25
@@ -243,6 +244,10 @@ def log_event(name, **fields):
         write_log(f"======== {name} {details} ========")
     else:
         write_log(f"======== {name} ========")
+
+def straight_distance_for_corner(corner_index):
+    index = min(corner_index, len(STRAIGHT_DISTANCE_SEQUENCE_CM) - 1)
+    return STRAIGHT_DISTANCE_SEQUENCE_CM[index]
 
 # 繰り返し実行
 try:
@@ -356,6 +361,7 @@ try:
                             elapsed=f"{elapsed:.1f}s",
                             distance_cm=f"{estimated_distance:.0f}",
                             corner=f"{corner_count + 1}/{TOTAL_CORNERS}",
+                            required_cm=f"{next_turn_allowed_distance:.0f}",
                         )
                     if not in_corner and corner_candidate:
                         in_corner = True
@@ -382,7 +388,11 @@ try:
                         else:
                             in_corner = False
                             straight_frame_count = 0
-                            next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                            next_distance = straight_distance_for_corner(corner_count)
+                            next_turn_allowed_distance = estimated_distance + next_distance
+                            turn_unlocked = False
+                            lost_frame_count = 0
+                            stop_logged = False
                             after_turn_until = time.time() + AFTER_TURN_SECONDS
                             b = AFTER_TURN_SPEED
                             d = 0
@@ -396,6 +406,7 @@ try:
                                 width=w,
                                 speed=int(b),
                                 yaw=int(d),
+                                next_distance_cm=next_distance,
                                 next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                             )
                     else:
@@ -453,7 +464,11 @@ try:
                     else:
                         in_corner = False
                         straight_frame_count = 0
-                        next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                        next_distance = straight_distance_for_corner(corner_count)
+                        next_turn_allowed_distance = estimated_distance + next_distance
+                        turn_unlocked = False
+                        lost_frame_count = 0
+                        stop_logged = False
                         after_turn_until = time.time() + AFTER_TURN_SECONDS
                         b = AFTER_TURN_SPEED
                         d = 0
@@ -463,6 +478,7 @@ try:
                             corner=f"{corner_count}/{TOTAL_CORNERS}",
                             speed=int(b),
                             yaw=int(d),
+                            next_distance_cm=next_distance,
                             next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                         )
                     sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
@@ -505,7 +521,11 @@ try:
                 else:
                     in_corner = False
                     straight_frame_count = 0
-                    next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                    next_distance = straight_distance_for_corner(corner_count)
+                    next_turn_allowed_distance = estimated_distance + next_distance
+                    turn_unlocked = False
+                    lost_frame_count = 0
+                    stop_logged = False
                     after_turn_until = time.time() + AFTER_TURN_SECONDS
                     b = AFTER_TURN_SPEED
                     d = 0
@@ -515,6 +535,7 @@ try:
                         corner=f"{corner_count}/{TOTAL_CORNERS}",
                         speed=int(b),
                         yaw=int(d),
+                        next_distance_cm=next_distance,
                         next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
                     )
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
