@@ -2,6 +2,7 @@ import socket
 import threading
 import cv2
 import time
+import os
 import numpy as np
 # データ受け取り用の関数
 def udp_receiver():
@@ -127,7 +128,7 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(('', TELLO_PORT))
 # 問い合わせスレッド起動
 ask_thread = threading.Thread(target=ask)
-ask_thread.setDaemon(True)
+ask_thread.daemon = True
 ask_thread.start()
 # 受信用スレッドの作成
 recv_thread = threading.Thread(target=udp_receiver, args=())
@@ -168,10 +169,39 @@ def on_trackbar(val):
 
 #############################################
 
-# パラメータ変更部分（You may change following parameters.）
-H_MIN, H_MAX = 0, 0
-S_MIN, S_MAX = 0, 0
-V_MIN, V_MAX = 0, 0
+# 赤色検出と四角形コースの1周判定パラメータ
+# OpenCVのHは0～179。赤は境界をまたぐため2範囲を合成する。
+H_MIN, H_MAX = 0, 10
+S_MIN, S_MAX = 100, 255
+V_MIN, V_MAX = 100, 255
+RED_H_MIN_2, RED_H_MAX_2 = 170, 179
+
+TRACE_SPEED = 40
+MIN_STRAIGHT_DISTANCE_CM = 370
+TURN_UNLOCK_MARGIN_CM = 100
+TURN_SPEED = 15
+FORCE_TURN_FORWARD_SPEED = 0
+CORNER_FORCE_TURN_SECONDS = 2.0
+AFTER_TURN_SPEED = 15
+AFTER_TURN_SECONDS = 2.0
+CORNER_AREA_THRESHOLD = 15000
+CORNER_WIDTH_THRESHOLD = 300
+LOST_SEARCH_SPEED = 10
+LOST_SEARCH_YAW = 70
+MAX_LOST_FRAMES = 20
+TRACE_LOG_INTERVAL = 1.0
+LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), "drone_linetrace_trace.log")
+DEADBAND = 25
+YAW_GAIN = 1.2
+YAW_LIMIT = 100
+MIN_RED_AREA = 300
+MIN_LAP_SECONDS = 8.0
+# Telloのrcコマンドではdの正方向が時計回り。
+CLOCKWISE_YAW_SIGN = 1
+CORNER_YAW_THRESHOLD = 55
+STRAIGHT_YAW_THRESHOLD = 20
+STRAIGHT_CONFIRM_FRAMES = 8
+TOTAL_CORNERS = 4
 
 #############################################
 
@@ -184,8 +214,35 @@ cv2.createTrackbar("S_max", window_title, S_MAX, 255, on_trackbar)
 cv2.createTrackbar("V_min", window_title, V_MIN, 255, on_trackbar)
 cv2.createTrackbar("V_max", window_title, V_MAX, 255, on_trackbar)
 a = b = c = d = 0   # rcコマンドの初期値を入力
-b = 0              # 前進の値を0に設定
+b = TRACE_SPEED      # 赤線追跡時の前進速度
 flag = 0
+lap_started_at = None
+corner_count = 0
+in_corner = False
+straight_frame_count = 0
+lap_completed = False
+turn_unlocked = False
+estimated_distance = 0.0
+last_trace_time = None
+next_turn_allowed_distance = MIN_STRAIGHT_DISTANCE_CM
+corner_turn_started_at = None
+lost_frame_count = 0
+last_trace_log_at = 0.0
+stop_logged = False
+after_turn_until = 0.0
+
+def write_log(message):
+    line = f"{time.strftime('%H:%M:%S')} {message}"
+    print(line)
+    with open(LOG_FILE_PATH, "a", encoding="utf-8") as log_file:
+        log_file.write(line + "\n")
+
+def log_event(name, **fields):
+    details = " ".join(f"{key}={value}" for key, value in fields.items())
+    if details:
+        write_log(f"======== {name} {details} ========")
+    else:
+        write_log(f"======== {name} ========")
 
 # 繰り返し実行
 try:
@@ -199,7 +256,7 @@ try:
         # image = cv2.imread("IMG_7614.jpg")
         # image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)      # OpenCV用のカラー並びに変換する（既にBGRなので現状必要なし）
         small_image = cv2.resize(image, dsize=(480,360) )   # 画像サイズを半分に変更
-        bgr_image = small_image[250:359,0:479]              # 注目する領域(ROI)を(0,250)-(479,359)で切り取る
+        bgr_image = small_image[200:359,0:479]              # 注目する領域(ROI)を(0,200)-(479,359)で切り取る
         # cv2.imshow('test Window', bgr_image)
         hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)  # BGR画像 -> HSV画像
         # hsv_image = bgr_image
@@ -217,10 +274,20 @@ try:
         on_trackbar(s_max)
         on_trackbar(v_min)
         on_trackbar(v_max)
-        # inRange関数で範囲指定２値化
-        bin_image = cv2.inRange(hsv_image, (h_min, s_min, v_min), (h_max, s_max, v_max)) # HSV画像なのでタプルもHSV並び
-        kernel = np.ones((15,15),np.uint8)  # 15x15で膨張させる
-        dilation_image = cv2.dilate(bin_image,kernel,iterations = 1)    # 膨張して虎ロープをつなげる
+        # 赤はH=0付近とH=179付近に分かれるので、2つのマスクを合成する。
+        red_mask_1 = cv2.inRange(
+            hsv_image,
+            (h_min, s_min, v_min),
+            (h_max, s_max, v_max)
+        )
+        red_mask_2 = cv2.inRange(
+            hsv_image,
+            (RED_H_MIN_2, s_min, v_min),
+            (RED_H_MAX_2, s_max, v_max)
+        )
+        bin_image = cv2.bitwise_or(red_mask_1, red_mask_2)
+        kernel = np.ones((9,9),np.uint8)
+        dilation_image = cv2.morphologyEx(bin_image, cv2.MORPH_CLOSE, kernel)
         #erosion_image = cv2.erode(dilation_image,kernel,iterations = 1)    # 収縮
         # bitwise_andで元画像にマスクをかける -> マスクされた部分の色だけ残る
         masked_image = cv2.bitwise_and(hsv_image, hsv_image, mask=dilation_image)
@@ -244,26 +311,235 @@ try:
             s = stats[max_index][4]
             mx = int(center[max_index][0])
             my = int(center[max_index][1])
-            print("(x,y)=%d,%d (w,h)=%d,%d s=%d (mx,my)=%d,%d"%(x, y, w, h, s, mx, my) )
+            # 詳細な座標ログは[TRACE]に集約する。
             # ラベルを囲うバウンディングボックスを描画
             cv2.rectangle(out_image, (x, y), (x+w, y+h), (255, 0, 255))
             # 重心位置の座標を表示
             # cv2.putText(out_image, "%d,%d"%(mx,my), (x-15, y+h+15), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 0))
             cv2.putText(out_image, "%d"%(s), (x, y+h+15), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 0))
             # a：左右，b：前後，c：上下，d：ヨー角
-            if flag == 1:
-                # a=c=d=0，　b=40が基本．
+            if flag == 1 and s >= MIN_RED_AREA:
+                if lap_started_at is None:
+                    lap_started_at = time.time()
+                    last_trace_time = lap_started_at
+                    estimated_distance = 0.0
+                    next_turn_allowed_distance = MIN_STRAIGHT_DISTANCE_CM
+                    lost_frame_count = 0
+                    stop_logged = False
+                    log_event("TRACE START", speed=TRACE_SPEED, first_turn_distance_cm=MIN_STRAIGHT_DISTANCE_CM)
+                lost_frame_count = 0
+                stop_logged = False
+
+                # a=c=0，直線はb=40、角では前進を落として旋回を強める。
                 # 左右旋回のdだけが変化する．
                 # 前進速度のbはキー入力で変える．
-                dx = 1.0 * (240 - mx)       # 画面中心との差分
+                elapsed = time.time() - lap_started_at
+                dx = 1.0 * (mx - 240)       # 画面中心との差分
                 # 旋回方向の不感帯を設定
-                d = 0.0 if abs(dx) < 50.0 else dx   # ±50未満ならゼロにする
-                d = -d
-                # 旋回方向のソフトウェアリミッタ(±70を超えないように)
-                d =  70 if d >  70.0 else d
-                d = -70 if d < -70.0 else d
-                print('dx=%f'%(dx) )
+                d = 0.0 if abs(dx) < DEADBAND else dx * YAW_GAIN
+                # 旋回方向のソフトウェアリミッタ
+                d =  YAW_LIMIT if d >  YAW_LIMIT else d
+                d = -YAW_LIMIT if d < -YAW_LIMIT else d
+
+                corner_candidate = (
+                    s >= CORNER_AREA_THRESHOLD
+                    or w >= CORNER_WIDTH_THRESHOLD
+                )
+                if estimated_distance < next_turn_allowed_distance:
+                    b = AFTER_TURN_SPEED if time.time() < after_turn_until else TRACE_SPEED
+                    d = 0
+                else:
+                    if not turn_unlocked:
+                        turn_unlocked = True
+                        log_event(
+                            "TURN UNLOCK",
+                            elapsed=f"{elapsed:.1f}s",
+                            distance_cm=f"{estimated_distance:.0f}",
+                            corner=f"{corner_count + 1}/{TOTAL_CORNERS}",
+                        )
+                    if not in_corner and corner_candidate:
+                        in_corner = True
+                        straight_frame_count = 0
+                        corner_turn_started_at = time.time()
+                        corner_count += 1
+                        log_event(
+                            "TURN START",
+                            corner=f"{corner_count}/{TOTAL_CORNERS}",
+                            elapsed=f"{elapsed:.1f}s",
+                            mx=mx,
+                            my=my,
+                            area=s,
+                            width=w,
+                            speed=FORCE_TURN_FORWARD_SPEED,
+                            yaw=YAW_LIMIT,
+                        )
+
+                    if in_corner:
+                        force_turn_elapsed = time.time() - corner_turn_started_at
+                        if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                            b = FORCE_TURN_FORWARD_SPEED
+                            d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
+                        else:
+                            in_corner = False
+                            straight_frame_count = 0
+                            next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                            after_turn_until = time.time() + AFTER_TURN_SECONDS
+                            b = AFTER_TURN_SPEED
+                            d = 0
+                            log_event(
+                                "TURN END",
+                                corner=f"{corner_count}/{TOTAL_CORNERS}",
+                                elapsed=f"{elapsed:.1f}s",
+                                mx=mx,
+                                my=my,
+                                area=s,
+                                width=w,
+                                speed=int(b),
+                                yaw=int(d),
+                                next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
+                            )
+                    else:
+                        normal_speed = AFTER_TURN_SPEED if time.time() < after_turn_until else TRACE_SPEED
+                        b = TURN_SPEED if abs(d) >= CORNER_YAW_THRESHOLD else normal_speed
+
+                now = time.time()
+                if last_trace_time is not None:
+                    estimated_distance += max(0, b) * (now - last_trace_time)
+                last_trace_time = now
+
+                if time.time() - last_trace_log_at >= TRACE_LOG_INTERVAL:
+                    write_log('[TRACE] dx=%+.1f b=%d d=%d dist=%d/%d area=%d w=%d mx=%d my=%d corner=%d/%d lost=%d'%(
+                        dx, b, d, estimated_distance, next_turn_allowed_distance,
+                        s, w, mx, my, corner_count, TOTAL_CORNERS, lost_frame_count
+                    ))
+                    last_trace_log_at = time.time()
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS )
+
+                # 4つ目の角を抜けて直線へ戻ったら1周完了。
+                if (
+                    corner_count >= TOTAL_CORNERS
+                    and not in_corner
+                    and elapsed >= MIN_LAP_SECONDS
+                ):
+                    flag = 0
+                    lap_completed = True
+                    command_text = "Lap completed"
+                    sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+                    print("1周完了：停止しました。Lキーで着陸してください")
+            elif flag == 1:
+                lost_frame_count += 1
+                if lost_frame_count == 1:
+                    log_event("RED LOST", reason="small-area", area=s, min_area=MIN_RED_AREA, dist=f"{estimated_distance:.0f}")
+                near_turn_distance = estimated_distance >= next_turn_allowed_distance - TURN_UNLOCK_MARGIN_CM
+                if near_turn_distance and not in_corner:
+                    in_corner = True
+                    straight_frame_count = 0
+                    corner_turn_started_at = time.time()
+                    corner_count += 1
+                    log_event(
+                        "TURN START",
+                        reason="red-lost",
+                        corner=f"{corner_count}/{TOTAL_CORNERS}",
+                        speed=FORCE_TURN_FORWARD_SPEED,
+                        yaw=YAW_LIMIT,
+                        dist=f"{estimated_distance:.0f}",
+                    )
+
+                if in_corner:
+                    force_turn_elapsed = time.time() - corner_turn_started_at
+                    if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                        b = FORCE_TURN_FORWARD_SPEED
+                        d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
+                    else:
+                        in_corner = False
+                        straight_frame_count = 0
+                        next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                        after_turn_until = time.time() + AFTER_TURN_SECONDS
+                        b = AFTER_TURN_SPEED
+                        d = 0
+                        log_event(
+                            "TURN END",
+                            reason="red-lost",
+                            corner=f"{corner_count}/{TOTAL_CORNERS}",
+                            speed=int(b),
+                            yaw=int(d),
+                            next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
+                        )
+                    sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
+                    command_text = "Turning"
+                elif lost_frame_count <= MAX_LOST_FRAMES:
+                    b = LOST_SEARCH_SPEED
+                    d = CLOCKWISE_YAW_SIGN * LOST_SEARCH_YAW
+                    sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
+                    command_text = "Searching red"
+                else:
+                    sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+                    command_text = "Red line lost"
+                    if not stop_logged:
+                        log_event("STOP", reason="red-lost", lost_frames=lost_frame_count, dist=f"{estimated_distance:.0f}")
+                        stop_logged = True
+        elif flag == 1:
+            lost_frame_count += 1
+            if lost_frame_count == 1:
+                log_event("RED LOST", reason="no-label", dist=f"{estimated_distance:.0f}")
+            near_turn_distance = estimated_distance >= next_turn_allowed_distance - TURN_UNLOCK_MARGIN_CM
+            if near_turn_distance and not in_corner:
+                in_corner = True
+                straight_frame_count = 0
+                corner_turn_started_at = time.time()
+                corner_count += 1
+                log_event(
+                    "TURN START",
+                    reason="red-lost",
+                    corner=f"{corner_count}/{TOTAL_CORNERS}",
+                    speed=FORCE_TURN_FORWARD_SPEED,
+                    yaw=YAW_LIMIT,
+                    dist=f"{estimated_distance:.0f}",
+                )
+
+            if in_corner:
+                force_turn_elapsed = time.time() - corner_turn_started_at
+                if force_turn_elapsed < CORNER_FORCE_TURN_SECONDS:
+                    b = FORCE_TURN_FORWARD_SPEED
+                    d = CLOCKWISE_YAW_SIGN * YAW_LIMIT
+                else:
+                    in_corner = False
+                    straight_frame_count = 0
+                    next_turn_allowed_distance = estimated_distance + MIN_STRAIGHT_DISTANCE_CM
+                    after_turn_until = time.time() + AFTER_TURN_SECONDS
+                    b = AFTER_TURN_SPEED
+                    d = 0
+                    log_event(
+                        "TURN END",
+                        reason="red-lost",
+                        corner=f"{corner_count}/{TOTAL_CORNERS}",
+                        speed=int(b),
+                        yaw=int(d),
+                        next_turn_distance_cm=f"{next_turn_allowed_distance:.0f}",
+                    )
+                sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
+                command_text = "Turning"
+            elif lost_frame_count <= MAX_LOST_FRAMES:
+                b = LOST_SEARCH_SPEED
+                d = CLOCKWISE_YAW_SIGN * LOST_SEARCH_YAW
+                sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS)
+                command_text = "Searching red"
+            else:
+                sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+                command_text = "Red line lost"
+                if not stop_logged:
+                    log_event("STOP", reason="red-lost", lost_frames=lost_frame_count, dist=f"{estimated_distance:.0f}")
+                    stop_logged = True
+
+        status = (
+            "LAP COMPLETE"
+            if lap_completed
+            else (f"TRACING RED  CORNERS:{corner_count}/{TOTAL_CORNERS}" if flag == 1 else "READY")
+        )
+        cv2.putText(
+            out_image, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX,
+            0.7, (0, 255, 255), 2, cv2.LINE_AA
+        )
         # (X)ウィンドウに表示
         out_image = masked_image
         cv2.imshow('OpenCV Window', out_image)  # ウィンドウに表示するイメージを変えれば色々表示できる
@@ -316,6 +592,22 @@ try:
         # 追跡モードをON
         elif key == ord('1'):
             flag = 1
+            lap_started_at = None
+            corner_count = 0
+            in_corner = False
+            straight_frame_count = 0
+            lap_completed = False
+            turn_unlocked = False
+            estimated_distance = 0.0
+            last_trace_time = None
+            next_turn_allowed_distance = MIN_STRAIGHT_DISTANCE_CM
+            corner_turn_started_at = None
+            lost_frame_count = 0
+            last_trace_log_at = 0.0
+            stop_logged = False
+            after_turn_until = 0.0
+            b = TRACE_SPEED
+            command_text = "Tracing red"
         # 追跡モードをOFF
         elif key == ord('2'):
             flag = 0
@@ -335,6 +627,7 @@ try:
             pre_time = current_time         # 前回時刻を更新
 except( KeyboardInterrupt, SystemExit):    # Ctrl+cが押されたら離脱
     print( "SIGINTを検知" )
+sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
 # cap.release()
 cv2.destroyAllWindows()
 # ビデオストリーミング停止
