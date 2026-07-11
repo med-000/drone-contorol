@@ -3,6 +3,67 @@ import threading
 import cv2
 import time
 import numpy as np
+from pynput import keyboard
+
+
+RC_SPEED = 40
+pressed_keys = set()
+pressed_keys_lock = threading.Lock()
+control_running = True
+
+
+def on_key_press(key):
+    try:
+        char = key.char.lower()
+    except AttributeError:
+        return
+
+    if char in {'w', 's', 'a', 'd', 'r', 'c', 'q', 'e'}:
+        with pressed_keys_lock:
+            pressed_keys.add(char)
+
+
+def on_key_release(key):
+    try:
+        char = key.char.lower()
+    except AttributeError:
+        return
+
+    with pressed_keys_lock:
+        pressed_keys.discard(char)
+
+
+def keyboard_control():
+    """押されているキーに応じた連続制御コマンドを20Hzで送る。"""
+    global command_text
+
+    while control_running:
+        with pressed_keys_lock:
+            keys = pressed_keys.copy()
+
+        # rc: 左右、前後、上下、旋回（各 -100 ～ 100）
+        lr = RC_SPEED * (('d' in keys) - ('a' in keys))
+        fb = RC_SPEED * (('w' in keys) - ('s' in keys))
+        ud = RC_SPEED * (('r' in keys) - ('c' in keys))
+        yaw = RC_SPEED * (('e' in keys) - ('q' in keys))
+
+        try:
+            sock.sendto(f'rc {lr} {fb} {ud} {yaw}'.encode('utf-8'), TELLO_ADDRESS)
+        except OSError:
+            pass
+
+        active = [name for key, name in (
+            ('w', 'Forward'), ('s', 'Back'), ('a', 'Left'), ('d', 'Right'),
+            ('r', 'Up'), ('c', 'Down'), ('q', 'Ccw'), ('e', 'Cw')
+        ) if key in keys]
+        if active:
+            command_text = '+'.join(active)
+        elif command_text in {
+            'Forward', 'Back', 'Left', 'Right', 'Up', 'Down', 'Ccw', 'Cw'
+        } or '+' in command_text:
+            command_text = 'Stop'
+
+        time.sleep(0.05)
 
 # データ受け取り用の関数
 def udp_receiver():
@@ -10,17 +71,17 @@ def udp_receiver():
         global time_text
         global status_text
 
-        while True: 
+        while True:
             try:
                 data, server = sock.recvfrom(1518)
                 resp = data.decode(encoding="utf-8").strip()
                 # レスポンスが数字だけならバッテリー残量
-                if resp.isdecimal():    
+                if resp.isdecimal():
                     battery_text = "Battery:" + resp + "%"
                 # 最後の文字がsなら飛行時間
                 elif resp[-1:] == "s":
                     time_text = "Time:" + resp
-                else: 
+                else:
                     status_text = "Status:" + resp
             except:
                 pass
@@ -150,6 +211,12 @@ sock.sendto('command'.encode('utf-8'), TELLO_ADDRESS)
 
 time.sleep(1)
 
+# キーの押下・解放を監視し、連続制御を開始
+key_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
+key_listener.start()
+control_thread = threading.Thread(target=keyboard_control, daemon=True)
+control_thread.start()
+
 # カメラ映像のストリーミング開始
 sock.sendto('streamon'.encode('utf-8'), TELLO_ADDRESS)
 
@@ -187,16 +254,16 @@ while True:
 
     # qrコードの読み取り
     if cnt_frame % 5 == 0:
-        retval, decoded_info, points, straight_qrcode = qcd.detectAndDecodeMulti(frame_resized) 
+        retval, decoded_info, points, straight_qrcode = qcd.detectAndDecodeMulti(frame_resized)
         if retval:
             frame_qrdet = cv2.polylines(frame_resized, points.astype(int), True, (0, 255, 0), 3)
             frame_ouput = frame_qrdet
-    
+
         if len(decoded_info) != 0:
             print(f"読み取り結果(result)：{decoded_info}")
 
-    
-    
+
+
 
     # 送信したコマンドを表示
     cv2.putText(frame_output,
@@ -243,22 +310,6 @@ while True:
     # escキーで終了
     if key == 27:
         break
-    # wキーで前進
-    elif key == ord('w'):
-        forward()
-        command_text = "Forward"
-    # sキーで後進
-    elif key == ord('s'):
-        back()
-        command_text = "Back"
-    # aキーで左進
-    elif key == ord('a'):
-        left()
-        command_text = "Left"
-    # dキーで右進
-    elif key == ord('d'):
-        right()
-        command_text = "Right"
     # tキーで離陸
     elif key == ord('t'):
         takeoff()
@@ -267,27 +318,15 @@ while True:
     elif key == ord('l'):
         land()
         command_text = "Land"
-    # rキーで上昇
-    elif key == ord('r'):
-        up()
-        command_text = "Up"
-    # cキーで下降
-    elif key == ord('c'):
-        down()
-        command_text = "Down"
-    # qキーで左回りに回転
-    elif key == ord('q'):
-        ccw()
-        command_text = "Ccw"
-    # eキーで右回りに回転
-    elif key == ord('e'):
-        cw()
-        command_text = "Cw"
     # mキーで速度変更
     elif key == ord('m'):
         set_speed()
         command_text = "Changed speed"
 
+control_running = False
+key_listener.stop()
+control_thread.join(timeout=0.2)
+sock.sendto('rc 0 0 0 0'.encode('utf-8'), TELLO_ADDRESS)
 cap.release()
 cv2.destroyAllWindows()
 
