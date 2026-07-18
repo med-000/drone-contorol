@@ -16,9 +16,18 @@ def on_key_press(key):
     try:
         char = key.char.lower()
     except AttributeError:
-        return
+        if key == keyboard.Key.left:
+            char = 'left_arrow'
+        elif key == keyboard.Key.right:
+            char = 'right_arrow'
+        elif key == keyboard.Key.up:
+            char = 'up_arrow'
+        elif key == keyboard.Key.down:
+            char = 'down_arrow'
+        else:
+            return
 
-    if char in {'w', 's', 'a', 'd', 'r', 'c', 'q', 'e'}:
+    if char in {'w', 's', 'a', 'd', 'up_arrow', 'down_arrow', 'left_arrow', 'right_arrow'}:
         with pressed_keys_lock:
             pressed_keys.add(char)
 
@@ -27,7 +36,16 @@ def on_key_release(key):
     try:
         char = key.char.lower()
     except AttributeError:
-        return
+        if key == keyboard.Key.left:
+            char = 'left_arrow'
+        elif key == keyboard.Key.right:
+            char = 'right_arrow'
+        elif key == keyboard.Key.up:
+            char = 'up_arrow'
+        elif key == keyboard.Key.down:
+            char = 'down_arrow'
+        else:
+            return
 
     with pressed_keys_lock:
         pressed_keys.discard(char)
@@ -44,8 +62,8 @@ def keyboard_control():
         # rc: 左右、前後、上下、旋回（各 -100 ～ 100）
         lr = RC_SPEED * (('d' in keys) - ('a' in keys))
         fb = RC_SPEED * (('w' in keys) - ('s' in keys))
-        ud = RC_SPEED * (('r' in keys) - ('c' in keys))
-        yaw = RC_SPEED * (('e' in keys) - ('q' in keys))
+        ud = RC_SPEED * (('up_arrow' in keys) - ('down_arrow' in keys))
+        yaw = RC_SPEED * (('right_arrow' in keys) - ('left_arrow' in keys))
 
         try:
             sock.sendto(f'rc {lr} {fb} {ud} {yaw}'.encode('utf-8'), TELLO_ADDRESS)
@@ -54,7 +72,7 @@ def keyboard_control():
 
         active = [name for key, name in (
             ('w', 'Forward'), ('s', 'Back'), ('a', 'Left'), ('d', 'Right'),
-            ('r', 'Up'), ('c', 'Down'), ('q', 'Ccw'), ('e', 'Cw')
+            ('up_arrow', 'Up(Up)'), ('down_arrow', 'Down(Down)'), ('left_arrow', 'Ccw(Left)'), ('right_arrow', 'Cw(Right)')
         ) if key in keys]
         if active:
             command_text = '+'.join(active)
