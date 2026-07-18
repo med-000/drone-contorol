@@ -450,3 +450,28 @@
 17:22:10 ======== TURN END reason=red-lost corner=4/4 speed=15 yaw=0 next_distance_cm=330 next_turn_distance_cm=1610 ========
 17:22:10 ======== RED LOST reason=no-label dist=1280 ========
 17:22:10 [TRACE] dx=+229.0 b=15 d=0 dist=1310/1610 area=338 w=25 mx=469 my=147 corner=4/4 lost=0 near=0 early=0 in_turn=0
+17:47:51 ======== TRACE START speed=40 first_turn_distance_cm=350 ========
+17:47:51 [TRACE] dx=+64.0 b=40 d=0 dist=0/350 area=2137 w=19 mx=304 my=90 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:52 [TRACE] dx=+61.0 b=40 d=0 dist=40/350 area=1638 w=15 mx=301 my=90 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:53 [TRACE] dx=+63.0 b=40 d=0 dist=81/350 area=1553 w=14 mx=303 my=91 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:54 [TRACE] dx=+80.0 b=40 d=0 dist=122/350 area=1636 w=28 mx=320 my=91 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:55 [TRACE] dx=+105.0 b=40 d=0 dist=163/350 area=1858 w=47 mx=345 my=82 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:56 [TRACE] dx=+139.0 b=40 d=0 dist=203/350 area=1627 w=133 mx=379 my=92 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:57 [TRACE] dx=+174.0 b=40 d=0 dist=245/350 area=1278 w=96 mx=414 my=114 corner=0/4 lost=0 near=0 early=0 in_turn=0
+17:47:57 ======== TURN UNLOCK reason=early-corner elapsed=6.3s distance_cm=251 corner=1/4 required_cm=350 ========
+17:47:57 ======== EARLY TURN dx=+179.0 width=87 area=1153 distance_cm=251 required_cm=350 ========
+17:47:57 ======== TURN START reason=early-corner corner=1/4 elapsed=6.3s mx=419 my=120 area=1153 width=87 speed=0 yaw=100 ========
+17:47:57 [TRACE] dx=+184.0 b=0 d=100 dist=251/350 area=1085 w=83 mx=424 my=124 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:58 [TRACE] dx=+195.0 b=0 d=100 dist=251/350 area=824 w=70 mx=435 my=136 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:58 [TRACE] dx=+157.0 b=0 d=100 dist=251/350 area=1199 w=146 mx=397 my=139 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:58 [TRACE] dx=+69.0 b=0 d=100 dist=251/350 area=1907 w=307 mx=309 my=114 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:59 [TRACE] dx=-55.0 b=0 d=100 dist=251/350 area=1367 w=224 mx=185 my=107 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:59 [TRACE] dx=-166.0 b=0 d=100 dist=251/350 area=1208 w=192 mx=74 my=97 corner=1/4 lost=0 near=1 early=0 in_turn=1
+17:47:59 ======== RED LOST reason=small-area area=198 min_area=300 dist=251 ========
+17:47:59 ======== TURN END reason=red-lost corner=1/4 speed=15 yaw=0 next_distance_cm=340 next_turn_distance_cm=591 ========
+17:47:59 ======== RED LOST reason=no-label dist=251 ========
+17:48:00 [TRACE] dx=-68.0 b=15 d=0 dist=265/591 area=1458 w=92 mx=172 my=91 corner=1/4 lost=0 near=0 early=0 in_turn=0
+17:48:01 ======== RED LOST reason=no-label dist=278 ========
+17:48:02 [TRACE] dx=-218.0 b=40 d=0 dist=309/591 area=840 w=53 mx=22 my=80 corner=1/4 lost=0 near=0 early=0 in_turn=0
+17:48:02 ======== RED LOST reason=small-area area=4 min_area=300 dist=311 ========
+17:48:03 ======== STOP reason=red-lost lost_frames=46 dist=311 ========
