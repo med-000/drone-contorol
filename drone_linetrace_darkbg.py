@@ -100,7 +100,7 @@ def ccw():
         except:
             pass
 # 速度変更(例：速度40cm/sec, 0 < speed < 100)
-def set_speed(n=40):
+def set_speed(n=60):
         try:
             sent = sock.sendto(f'speed {n}'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
@@ -144,10 +144,23 @@ if cap is None:
     cap = cv2.VideoCapture(TELLO_CAMERA_ADDRESS)
 if not cap.isOpened():
     cap.open(TELLO_CAMERA_ADDRESS)
-# cap = cv2.VideoCapture(0)
 time.sleep(2)
-count = 0
 sent = sock.sendto('setfps low'.encode(encoding="utf-8"), TELLO_ADDRESS)
+
+# 最新フレームを常に取得し続ける裏側スレッド（ラグ解消）
+latest_frame = None
+def video_capture_thread():
+    global latest_frame
+    while True:
+        ret, frame = cap.read()
+        if ret:
+            latest_frame = frame
+        else:
+            time.sleep(0.01)
+
+vcap_thread = threading.Thread(target=video_capture_thread)
+vcap_thread.daemon = True
+vcap_thread.start()
 # Telloクラスを使って，droneというインスタンス(実体)を作る
 current_time = time.time()  # 現在時刻の保存変数
 pre_time = current_time     # 5秒ごとの'command'送信のための時刻変数
@@ -161,13 +174,10 @@ cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
 # 4色のHSVしきい値定義
 # 赤: H(0-10, 170-179), S(100-255), V(50-255)
 # 青: H(100-140), S(100-255), V(50-255)
-# 黄: H(20-40), S(100-255), V(50-255)
-# 黒: S(0-255), V(0-60)
 COLOR_RANGES = {
     'red1': ((0, 100, 50), (10, 255, 255)),
     'red2': ((170, 100, 50), (179, 255, 255)),
-    'blue': ((100, 100, 50), (140, 255, 255)),
-    'yellow': ((20, 100, 50), (40, 255, 255))
+    'blue': ((100, 100, 50), (140, 255, 255))
 }
 a = b = c = d = 0   # rcコマンドの初期値を入力
 b = 0              # 前進の値を0に設定
@@ -176,17 +186,17 @@ flag = 0
 # 繰り返し実行
 try:
     while True:
-        # (A)画像取得
-        ret, frame = cap.read()  # 映像を1フレーム取得
+        # (A)画像取得（スレッドから最新フレームをもらう）
+        frame = latest_frame
         if frame is None or frame.size == 0:    # 中身がおかしかったら無視
+            time.sleep(0.01)
             continue
         image = frame
         # (B)ここから画像処理
-        # image = cv2.imread("IMG_7614.jpg")
-        # image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)      # OpenCV用のカラー並びに変換する（既にBGRなので現状必要なし）
         small_image = cv2.resize(image, dsize=(480,360) )   # 画像サイズを半分に変更
-        # 注目する領域(ROI)を広げて少し先まで見えるようにする (150から下にする)
-        bgr_image = small_image[150:359,0:479]              
+        # 背景（椅子など）が映り込むのを防ぐため、少し下の方だけを見るように戻す (220から下)
+        roi_y_start = 220
+        bgr_image = small_image[roi_y_start:359,0:479]              
         hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV)  # BGR画像 -> HSV画像
         
         # 4色のマスクを作成して合成する
@@ -203,7 +213,7 @@ try:
         #erosion_image = cv2.erode(dilation_image,kernel,iterations = 1)    # 収縮
         # bitwise_andで元画像にマスクをかける -> マスクされた部分の色だけ残る
         masked_image = cv2.bitwise_and(bgr_image, bgr_image, mask=dilation_image)
-        # ラベリング結果書き出し用に画像を準備
+        # ラベリング結果書き出し用に画像を準備（認識されたラインだけを映す）
         out_image = masked_image
         # 面積・重心計算付きのラベリング処理を行う
         num_labels, label_image, stats, center = cv2.connectedComponentsWithStats(dilation_image)
@@ -225,33 +235,34 @@ try:
             my = int(center[max_index][1])
             print("(x,y)=%d,%d (w,h)=%d,%d s=%d (mx,my)=%d,%d"%(x, y, w, h, s, mx, my) )
             # ラベルを囲うバウンディングボックスを描画
-            cv2.rectangle(out_image, (x, y), (x+w, y+h), (255, 0, 255))
+            cv2.rectangle(out_image, (x, y), (x+w, y+h), (255, 0, 255), 2)
             # 重心位置の座標を表示
-            # cv2.putText(out_image, "%d,%d"%(mx,my), (x-15, y+h+15), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 0))
             cv2.putText(out_image, "%d"%(s), (x, y+h+15), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 0))
             # a：左右，b：前後，c：上下，d：ヨー角
             if flag == 1:
                 # 左右旋回のdだけが変化する．
                 dx = 1.0 * (240 - mx)       # 画面中心との差分
-                # 旋回方向の不感帯を設定
-                d = 0.0 if abs(dx) < 30.0 else dx   # 少し敏感に±30未満ならゼロにする
+                # 旋回方向の不感帯を設定し、旋回の過剰な反応（振り向きの繰り返し）を防ぐため倍率を0.5に下げる
+                d = 0.0 if abs(dx) < 30.0 else dx * 0.5
                 d = -d
                 
                 # 直角コーナー対応: 旋回量が大きい時は前進速度bを落として旋回を優先する
                 base_speed = 30
-                # 旋回量(dx)に応じて減速。dxが240に近い(端にある)と速度はほぼ0になる。
+                # 旋回量(dx)に応じて減速。
                 auto_b = base_speed - (abs(dx) * 0.15)
                 auto_b = 30 if auto_b > 30 else auto_b
-                auto_b = 0 if auto_b < 0 else auto_b
+                auto_b = 10 if auto_b < 10 else auto_b  # 逆走防止のため最低速度10を維持
                 b = auto_b
                 
-                # 旋回方向のソフトウェアリミッタ(±80を超えないように)
-                d =  80 if d >  80.0 else d
-                d = -80 if d < -80.0 else d
+                # 旋回方向のソフトウェアリミッタ(激しすぎる動きを防ぐため最大速度を60に制限)
+                d =  60 if d >  60.0 else d
+                d = -60 if d < -60.0 else d
                 print('dx=%f, b=%f, d=%f'%(dx, b, d) )
+                
+                # 高度を一定に保つため、上下移動(c)は常に0を強制する
+                c = 0
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS )
         # (X)ウィンドウに表示
-        out_image = masked_image
         # 画面にバッテリー残量と最後のコマンドを表示（デバッグ用）
         cv2.putText(out_image, battery_text, (10, 20), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
         cv2.putText(out_image, "Cmd: " + command_text, (10, 50), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
