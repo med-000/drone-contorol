@@ -128,7 +128,7 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(('', TELLO_PORT))
 # 問い合わせスレッド起動
 ask_thread = threading.Thread(target=ask)
-ask_thread.setDaemon(True)
+ask_thread.daemon = True
 ask_thread.start()
 # 受信用スレッドの作成
 recv_thread = threading.Thread(target=udp_receiver, args=())
@@ -252,6 +252,10 @@ try:
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS )
         # (X)ウィンドウに表示
         out_image = masked_image
+        # 画面にバッテリー残量と最後のコマンドを表示（デバッグ用）
+        cv2.putText(out_image, battery_text, (10, 20), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
+        cv2.putText(out_image, "Cmd: " + command_text, (10, 50), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
+        cv2.putText(out_image, status_text, (10, 80), cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255), 2)
         cv2.imshow('OpenCV Window', out_image)  # ウィンドウに表示するイメージを変えれば色々表示できる
         # (Y)OpenCVウィンドウでキー入力を1ms待つ
         key = cv2.waitKey(1)
