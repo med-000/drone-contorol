@@ -231,8 +231,20 @@ if not cap.isOpened():
 
 time.sleep(1)
 
+# 最新フレームを常に取得し続ける裏側スレッド（映像のラグ解消・操縦性向上）
+latest_frame = None
+def video_capture_thread():
+    global latest_frame
+    while True:
+        ret, frame = cap.read()
+        if ret:
+            latest_frame = frame
+        else:
+            time.sleep(0.01)
 
-
+vcap_thread = threading.Thread(target=video_capture_thread)
+vcap_thread.daemon = True
+vcap_thread.start()
 cnt_frame = 0
 
 # qrコード読み取り用のインスタンス
@@ -240,11 +252,12 @@ qcd = cv2.QRCodeDetector()
 
 
 while True:
-    ret, frame = cap.read()
+    frame = latest_frame
     cnt_frame += 1
 
     # 動画フレームが空ならスキップ
     if frame is None or frame.size == 0:
+        time.sleep(0.01)
         continue
 
     # カメラ映像のサイズを半分にする
@@ -301,6 +314,15 @@ while True:
             color=(0, 255, 0),
             thickness=1,
             lineType=cv2.LINE_4)
+    # 現在の速度設定を表示
+    cv2.putText(frame_output,
+            text=f"Speed: {RC_SPEED}",
+            org=(10, 100),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+            fontScale=0.5,
+            color=(0, 255, 255),
+            thickness=1,
+            lineType=cv2.LINE_4)
     # カメラ映像を画面に表示
     cv2.imshow('Tello Camera View', frame_output)
 
@@ -318,10 +340,14 @@ while True:
     elif key == ord('l'):
         land()
         command_text = "Land"
-    # mキーで速度変更
-    elif key == ord('m'):
-        set_speed()
-        command_text = "Changed speed"
+    # uキーで速度アップ
+    elif key == ord('u'):
+        RC_SPEED = min(100, RC_SPEED + 10)
+        command_text = "Speed Up"
+    # jキーで速度ダウン
+    elif key == ord('j'):
+        RC_SPEED = max(10, RC_SPEED - 10)
+        command_text = "Speed Down"
 
 control_running = False
 key_listener.stop()
