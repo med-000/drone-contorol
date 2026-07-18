@@ -63,40 +63,40 @@ def down():
             sent = sock.sendto('down 20'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 前に進む(0cm)
+# 前に進む(20cm)
 def forward():
         try:
-            sent = sock.sendto('forward 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('forward 20'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 後に進む(0cm)
+# 後に進む(20cm)
 def back():
         try:
-            sent = sock.sendto('back 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('back 20'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 右に進む(0cm)
+# 右に進む(20cm)
 def right():
         try:
-            sent = sock.sendto('right 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('right 20'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 左に進む(0cm)
+# 左に進む(20cm)
 def left():
         try:
-            sent = sock.sendto('left 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('left 20'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 右回りに回転(90 deg)
+# 右回りに回転(30 deg)
 def cw():
         try:
-            sent = sock.sendto('cw 90'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('cw 30'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
-# 左回りに回転(90 deg)
+# 左回りに回転(30 deg)
 def ccw():
         try:
-            sent = sock.sendto('ccw 90'.encode(encoding="utf-8"), TELLO_ADDRESS)
+            sent = sock.sendto('ccw 30'.encode(encoding="utf-8"), TELLO_ADDRESS)
         except:
             pass
 # 速度変更(例：速度40cm/sec, 0 < speed < 100)
@@ -182,6 +182,7 @@ COLOR_RANGES = {
 a = b = c = d = 0   # rcコマンドの初期値を入力
 b = 0              # 前進の値を0に設定
 flag = 0
+base_speed = 30    # ライントレース中の基本前進スピード
 
 # 繰り返し実行
 try:
@@ -247,10 +248,9 @@ try:
                 d = -d
                 
                 # 直角コーナー対応: 旋回量が大きい時は前進速度bを落として旋回を優先する
-                base_speed = 30
                 # 旋回量(dx)に応じて減速。
                 auto_b = base_speed - (abs(dx) * 0.15)
-                auto_b = 30 if auto_b > 30 else auto_b
+                auto_b = base_speed if auto_b > base_speed else auto_b
                 auto_b = 10 if auto_b < 10 else auto_b  # 逆走防止のため最低速度10を維持
                 b = auto_b
                 
@@ -262,11 +262,21 @@ try:
                 # 高度を一定に保つため、上下移動(c)は常に0を強制する
                 c = 0
                 sock.sendto(('rc %s %s %s %s'%(int(a), int(b), int(c), int(d))).encode(encoding="utf-8"), TELLO_ADDRESS )
+        else:
+            # ラインが見つからない場合（見失った場合）
+            if flag == 1:
+                # 暴走を防ぐため、その場でピタッと止まってホバリングする
+                sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS)
         # (X)ウィンドウに表示
         # 画面にバッテリー残量と最後のコマンドを表示（デバッグ用）
         cv2.putText(out_image, battery_text, (10, 20), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
         cv2.putText(out_image, "Cmd: " + command_text, (10, 50), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 2)
         cv2.putText(out_image, status_text, (10, 80), cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255), 2)
+        cv2.putText(out_image, f"Trace Speed: {base_speed}", (10, 110), cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 255, 255), 2)
+        
+        mode_str = "Auto Trace (Key: 1)" if flag == 1 else "Manual Control (Key: 2)"
+        cv2.putText(out_image, f"Mode: {mode_str}", (10, 140), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 0, 255), 2)
+        
         cv2.imshow('OpenCV Window', out_image)  # ウィンドウに表示するイメージを変えれば色々表示できる
         # (Y)OpenCVウィンドウでキー入力を1ms待つ
         key = cv2.waitKey(1)
@@ -322,13 +332,9 @@ try:
             flag = 0
             sock.sendto('rc 0 0 0 0'.encode(encoding="utf-8"), TELLO_ADDRESS )
         elif key == ord('y'):           # 前進速度をキー入力で可変
-            b = b + 10
-            if b > 100:
-                b = 100
+            base_speed = min(100, base_speed + 5)
         elif key == ord('h'):
-            b = b - 10
-            if b < 0:
-                b = 0
+            base_speed = max(10, base_speed - 5)
         # (Z)5秒おきに'command'を送って、死活チェックを通す
         current_time = time.time()  # 現在時刻を取得
         if current_time - pre_time > 5.0 :  # 前回時刻から5秒以上経過しているか？
